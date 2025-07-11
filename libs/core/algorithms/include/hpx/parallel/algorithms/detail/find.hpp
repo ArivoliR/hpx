@@ -47,8 +47,8 @@ namespace hpx::parallel::detail {
             Token& tok, T const& val, Proj&& proj)
         {
             util::loop_idx_n<ExPolicy>(base_idx, part_begin, part_count, tok,
-                [&val, &proj, &tok](auto& v, std::size_t i) -> void {
-                    if (HPX_INVOKE(proj, v) == val)
+                [&val, &proj, &tok](auto&& v, std::size_t i) -> void {
+                    if (HPX_INVOKE(proj, std::forward<decltype(v)>(v)) == val)
                     {
                         tok.cancel(i);
                     }
@@ -118,8 +118,8 @@ namespace hpx::parallel::detail {
             Proj&& proj)
         {
             util::loop_idx_n<ExPolicy>(base_idx, part_begin, part_count, tok,
-                [&f, &proj, &tok](auto& v, std::size_t i) -> void {
-                    if (HPX_INVOKE(f, HPX_INVOKE(proj, v)))
+                [&f, &proj, &tok](auto&& v, std::size_t i) -> void {
+                    if (HPX_INVOKE(f, HPX_INVOKE(proj, std::forward<decltype(v)>(v))))
                     {
                         tok.cancel(i);
                     }
@@ -200,8 +200,8 @@ namespace hpx::parallel::detail {
             Proj&& proj)
         {
             util::loop_idx_n<ExPolicy>(base_idx, part_begin, part_count, tok,
-                [&f, &proj, &tok](auto& v, std::size_t i) -> void {
-                    if (!HPX_INVOKE(f, HPX_INVOKE(proj, v)))
+                [&f, &proj, &tok](auto&& v, std::size_t i) -> void {
+                    if (!HPX_INVOKE(f, HPX_INVOKE(proj, std::forward<decltype(v)>(v))))
                     {
                         tok.cancel(i);
                     }

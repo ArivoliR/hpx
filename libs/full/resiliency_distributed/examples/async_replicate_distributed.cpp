@@ -10,7 +10,6 @@
 #include <hpx/config.hpp>
 #if !defined(HPX_COMPUTE_DEVICE_CODE)
 
-#include <hpx/actions_base/plain_action.hpp>
 #include <hpx/assert.hpp>
 #include <hpx/hpx_init.hpp>
 #include <hpx/include/runtime.hpp>
@@ -18,37 +17,12 @@
 #include <hpx/modules/resiliency_distributed.hpp>
 #include <hpx/modules/testing.hpp>
 
+#include "common.hpp"
+
 #include <cstddef>
 #include <iostream>
 #include <random>
 #include <vector>
-
-int universal_ans(std::vector<hpx::id_type> f_locales, std::size_t size)
-{
-    // Pretending to do some useful work
-    std::size_t start = hpx::chrono::high_resolution_clock::now();
-
-    while ((hpx::chrono::high_resolution_clock::now() - start) < (size * 100))
-    {
-    }
-
-    // Check if the node is faulty
-    for (const auto& locale : f_locales)
-    {
-        // Throw a runtime error in case the node is faulty
-        if (locale == hpx::find_here())
-            throw std::runtime_error("runtime error occurred.");
-    }
-
-    return 42;
-}
-
-HPX_PLAIN_ACTION(universal_ans, universal_action)
-
-bool validate(int ans)
-{
-    return ans == 42;
-}
 
 int vote(std::vector<int>&& results)
 {
@@ -71,19 +45,9 @@ int hpx_main(hpx::program_options::variables_map& vm)
 
     // List of faulty nodes
     std::vector<hpx::id_type> f_locales;
-    std::vector<std::size_t> visited;
 
     // Mark nodes as faulty
-    for (std::size_t i = 0; i < f_nodes; ++i)
-    {
-        std::size_t num = std::rand() % locales.size();
-        while (visited.end() != std::find(visited.begin(), visited.end(), num))
-        {
-            num = std::rand() % locales.size();
-        }
-
-        f_locales.push_back(locales.at(num));
-    }
+    resiliency_example::mark_faulty_nodes(locales, f_nodes, f_locales);
 
     {
         hpx::chrono::high_resolution_timer t;
@@ -147,7 +111,7 @@ int hpx_main(hpx::program_options::variables_map& vm)
 
             tasks.push_back(
                 hpx::resiliency::experimental::async_replicate_validate(
-                    ids, &validate, ac, f_locales, size));
+                    ids, &resiliency_example::validate, ac, f_locales, size));
 
             std::rotate(locales.begin(), locales.begin() + 1, locales.end());
         }
@@ -220,7 +184,8 @@ int hpx_main(hpx::program_options::variables_map& vm)
 
             tasks.push_back(
                 hpx::resiliency::experimental::async_replicate_vote_validate(
-                    ids, &vote, &validate, ac, f_locales, size));
+                    ids, &vote, &resiliency_example::validate, ac, f_locales,
+                    size));
 
             std::rotate(locales.begin(), locales.begin() + 1, locales.end());
         }

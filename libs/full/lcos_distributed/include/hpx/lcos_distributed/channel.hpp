@@ -158,9 +158,60 @@ namespace hpx::lcos {
     };
 
     ///////////////////////////////////////////////////////////////////////////
+    // Common channel operations mixin to avoid code duplication
+    namespace detail {
+        template <typename Derived, typename T>
+        class channel_close_mixin
+        {
+        protected:
+            Derived& derived()
+            {
+                return static_cast<Derived&>(*this);
+            }
+
+            Derived const& derived() const
+            {
+                return static_cast<Derived const&>(*this);
+            }
+
+        public:
+            void close(launch::apply_policy, bool force_delete_entries = false)
+            {
+                using action_type =
+                    typename lcos::server::channel<T>::close_action;
+                hpx::post(
+                    action_type(), derived().get_id(), force_delete_entries);
+            }
+
+            hpx::future<std::size_t> close(
+                launch::async_policy, bool force_delete_entries = false)
+            {
+                using action_type =
+                    typename lcos::server::channel<T>::close_action;
+                return hpx::async(
+                    action_type(), derived().get_id(), force_delete_entries);
+            }
+
+            std::size_t close(
+                launch::sync_policy, bool force_delete_entries = false)
+            {
+                using action_type =
+                    typename lcos::server::channel<T>::close_action;
+                return action_type()(derived().get_id(), force_delete_entries);
+            }
+
+            std::size_t close(bool force_delete_entries = false)
+            {
+                return close(launch::sync, force_delete_entries);
+            }
+        };
+    }    // namespace detail
+
+    ///////////////////////////////////////////////////////////////////////////
     template <typename T>
     class channel
-      : public components::client_base<channel<T>, lcos::server::channel<T>>
+      : public components::client_base<channel<T>, lcos::server::channel<T>>,
+        public detail::channel_close_mixin<channel<T>, T>
     {
         using base_type =
             components::client_base<channel<T>, lcos::server::channel<T>>;
@@ -294,30 +345,6 @@ namespace hpx::lcos {
         }
 
         ///////////////////////////////////////////////////////////////////////
-        void close(launch::apply_policy, bool force_delete_entries = false)
-        {
-            using action_type = typename lcos::server::channel<T>::close_action;
-            hpx::post(action_type(), this->get_id(), force_delete_entries);
-        }
-        hpx::future<std::size_t> close(
-            launch::async_policy, bool force_delete_entries = false)
-        {
-            using action_type = typename lcos::server::channel<T>::close_action;
-            return hpx::async(
-                action_type(), this->get_id(), force_delete_entries);
-        }
-        std::size_t close(
-            launch::sync_policy, bool force_delete_entries = false)
-        {
-            using action_type = typename lcos::server::channel<T>::close_action;
-            return action_type()(this->get_id(), force_delete_entries);
-        }
-        std::size_t close(bool force_delete_entries = false)
-        {
-            return close(launch::sync, force_delete_entries);
-        }
-
-        ///////////////////////////////////////////////////////////////////////
         channel_iterator<T, channel<T>> begin() const
         {
             return channel_iterator<T, channel<T>>(*this);
@@ -424,7 +451,8 @@ namespace hpx::lcos {
     template <typename T>
     class send_channel
       : public components::client_base<send_channel<T>,
-            lcos::server::channel<T>>
+            lcos::server::channel<T>>,
+        public detail::channel_close_mixin<send_channel<T>, T>
     {
         using base_type =
             components::client_base<send_channel<T>, lcos::server::channel<T>>;
@@ -531,30 +559,6 @@ namespace hpx::lcos {
             std::size_t generation = default_generation)
         {
             set(launch::sync, generation);
-        }
-
-        ///////////////////////////////////////////////////////////////////////
-        void close(launch::apply_policy, bool force_delete_entries = false)
-        {
-            using action_type = typename lcos::server::channel<T>::close_action;
-            hpx::post(action_type(), this->get_id(), force_delete_entries);
-        }
-        hpx::future<std::size_t> close(
-            launch::async_policy, bool force_delete_entries = false)
-        {
-            using action_type = typename lcos::server::channel<T>::close_action;
-            return hpx::async(
-                action_type(), this->get_id(), force_delete_entries);
-        }
-        std::size_t close(
-            launch::sync_policy, bool force_delete_entries = false)
-        {
-            using action_type = typename lcos::server::channel<T>::close_action;
-            return action_type()(this->get_id(), force_delete_entries);
-        }
-        std::size_t close(bool force_delete_entries = false)
-        {
-            return close(launch::sync, force_delete_entries);
         }
     };
 }    // namespace hpx::lcos

@@ -33,6 +33,11 @@ namespace hpx::tracy {
         }
     };
 
+    HPX_CXX_EXPORT HPX_CORE_EXPORT void frame_mark_start(
+        char const* name) noexcept;
+    HPX_CXX_EXPORT HPX_CORE_EXPORT void frame_mark_end(
+        char const* name) noexcept;
+
     HPX_CXX_EXPORT HPX_CORE_EXPORT void create_counter(
         std::string const& name) noexcept;
 

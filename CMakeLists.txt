@@ -1163,6 +1163,13 @@ hpx_option(
   CATEGORY "Profiling"
 )
 
+hpx_option(
+  HPX_TRACY_WITH_MEMORY_TRACKING BOOL
+  "Enable Tracy memory allocation tracking via global new/delete override. Requires HPX_TRACY_WITH_TRACY=ON."
+  OFF
+  CATEGORY "Profiling"
+)
+
 # Experimental settings
 hpx_option(
   HPX_WITH_IO_POOL

@@ -20,6 +20,11 @@ set(tracy_headers hpx/tracy/tracy.hpp hpx/tracy/tracy_lock.hpp
 
 set(tracy_sources tracy.cpp tracy_init.cpp tracy_lock.cpp tracy_tls.cpp)
 
+if(HPX_TRACY_WITH_MEMORY_TRACKING)
+  list(APPEND tracy_sources tracy_memory.cpp)
+  hpx_info("    Tracy memory allocation tracking enabled (global new/delete override)")
+endif()
+
 include(HPX_AddModule)
 add_hpx_module(
   core tracy

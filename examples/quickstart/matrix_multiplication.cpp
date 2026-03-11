@@ -12,6 +12,10 @@
 #include <hpx/execution.hpp>
 #include <hpx/init.hpp>
 
+#if defined(HPX_HAVE_MODULE_TRACY)
+#include <hpx/modules/tracy.hpp>
+#endif
+
 #include <cstddef>
 #include <iostream>
 #include <random>
@@ -66,25 +70,47 @@ int hpx_main(hpx::program_options::variables_map& vm)
     int const upper = vm["u"].as<int>();
 
     // Matrices have random values in the range [lower, upper]
-    std::uniform_int_distribution<element_type> dis(lower, upper);
-    auto generator = std::bind(dis, gen);
-    hpx::ranges::generate(A, generator);
-    hpx::ranges::generate(B, generator);
+    {
+#if defined(HPX_HAVE_MODULE_TRACY)
+        hpx::tracy::region init_zone("matrix_init", 0, 0);
+#endif
+        std::uniform_int_distribution<element_type> dis(lower, upper);
+        auto generator = std::bind(dis, gen);
+        hpx::ranges::generate(A, generator);
+        hpx::ranges::generate(B, generator);
+    }
 
     // Perform matrix multiplication
-    hpx::experimental::for_loop(hpx::execution::par, 0, rowsA, [&](auto i) {
-        hpx::experimental::for_loop(0, colsB, [&](auto j) {
-            R[i * colsR + j] = 0;
-            hpx::experimental::for_loop(0, rowsB, [&](auto k) {
-                R[i * colsR + j] += A[i * colsA + k] * B[k * colsB + j];
+    {
+#if defined(HPX_HAVE_MODULE_TRACY)
+        hpx::tracy::frame_mark_start("matrix_multiply");
+        hpx::tracy::region mul_zone("matrix_multiply", 0, 0);
+#endif
+        hpx::experimental::for_loop(
+            hpx::execution::par, 0, rowsA, [&](auto i) {
+#if defined(HPX_HAVE_MODULE_TRACY)
+                hpx::tracy::region row_zone("multiply_row", 0, 0);
+#endif
+                hpx::experimental::for_loop(0, colsB, [&](auto j) {
+                    R[i * colsR + j] = 0;
+                    hpx::experimental::for_loop(0, rowsB, [&](auto k) {
+                        R[i * colsR + j] +=
+                            A[i * colsA + k] * B[k * colsB + j];
+                    });
+                });
             });
-        });
-    });
+#if defined(HPX_HAVE_MODULE_TRACY)
+        hpx::tracy::frame_mark_end("matrix_multiply");
+#endif
+    }
 
-    // Print all 3 matrices
-    print_matrix(A, rowsA, colsA, "A");
-    print_matrix(B, rowsB, colsB, "B");
-    print_matrix(R, rowsR, colsR, "R");
+    // Only print matrices if small enough to be readable
+    if (rowsA <= 16 && colsA <= 16 && colsB <= 16)
+    {
+        print_matrix(A, rowsA, colsA, "A");
+        print_matrix(B, rowsB, colsB, "B");
+        print_matrix(R, rowsR, colsR, "R");
+    }
 
     return hpx::local::finalize();
 }
@@ -99,14 +125,14 @@ int main(int argc, char* argv[])
     // clang-format off
     cmdline.add_options()
         ("n",
-        hpx::program_options::value<std::size_t>()->default_value(2),
+        hpx::program_options::value<std::size_t>()->default_value(512),
         "Number of rows of first matrix")
         ("m",
-        hpx::program_options::value<std::size_t>()->default_value(3),
+        hpx::program_options::value<std::size_t>()->default_value(512),
         "Number of columns of first matrix (equal to the number of rows of "
         "second matrix)")
         ("k",
-        hpx::program_options::value<std::size_t>()->default_value(2),
+        hpx::program_options::value<std::size_t>()->default_value(512),
         "Number of columns of second matrix")
         ("seed,s",
         hpx::program_options::value<unsigned int>(),

@@ -30,6 +30,9 @@
 #ifdef HPX_HAVE_MODULE_LIKWID
 #include <hpx/modules/likwid.hpp>
 #endif
+#ifdef HPX_HAVE_MODULE_TRACY
+#include <hpx/modules/tracy.hpp>
+#endif
 
 #include <cstddef>
 #include <cstdint>

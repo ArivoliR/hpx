@@ -28,7 +28,10 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
 #include <memory>
+#include <optional>
 #include <utility>
 
 namespace hpx::threads::detail {
@@ -232,10 +235,34 @@ namespace hpx::threads::detail {
                                     task_phase, thrdptr->get_thread_phase());
 #endif
 #if defined(HPX_HAVE_MODULE_TRACY)
-                                char const* name = thrdptr->get_description()
-                                                       .get_description();
-                                tracy::region rctx(name, num_thread,
-                                    thrdptr->get_thread_phase());
+                                auto const& tracy_desc =
+                                    thrdptr->get_description();
+                                bool const tracy_named =
+                                    tracy_desc.kind() ==
+                                        threads::thread_description::
+                                            data_type::description &&
+                                    std::strcmp(
+                                        tracy_desc.get_description(),
+                                        "<unknown>") != 0;
+                                char fiber_id[256];
+                                if (tracy_named)
+                                    std::snprintf(fiber_id, sizeof(fiber_id),
+                                        "%s#%p",
+                                        tracy_desc.get_description(),
+                                        static_cast<void const*>(thrdptr));
+                                if (tracy_named)
+                                    hpx::tracy::enter_fiber(fiber_id);
+                                // declare before rctx so destructor
+                                // fires after the zone closes
+                                auto tracy_fiber_leave =
+                                    hpx::experimental::scope_exit(
+                                        [] { hpx::tracy::leave_fiber(); });
+                                std::optional<tracy::region> rctx;
+                                if (tracy_named)
+                                    rctx.emplace(
+                                        tracy_desc.get_description(),
+                                        num_thread,
+                                        thrdptr->get_thread_phase());
 #endif
 
 #ifdef HPX_HAVE_THREAD_IDLE_RATES

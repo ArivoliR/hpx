@@ -20,15 +20,39 @@ namespace hpx::tracy {
         ::tracy::SetThreadName(name);
     }
 
+    namespace {
+        // Guards against TRACY_ON_DEMAND race: if the profiler connects after
+        // enter_fiber (which was a no-op), leave_fiber must also be a no-op.
+        // Without this, Tracy receives FiberLeave with no matching FiberEnter.
+        thread_local bool fiber_active = false;
+    }    // namespace
+
     // Expose Tracy fibers support
     void enter_fiber(char const* name) noexcept
     {
-        ::TracyFiberEnter(name);
+        bool const connected = ::tracy::GetProfiler().IsConnected();
+        if (connected)
+            ::TracyFiberEnter(name);
+        fiber_active = connected;
     }
 
     void leave_fiber() noexcept
     {
-        ::TracyFiberLeave;
+        if (fiber_active)
+        {
+            ::TracyFiberLeave;
+            fiber_active = false;
+        }
+    }
+
+    void frame_mark_start(char const* name) noexcept
+    {
+        ::tracy::Profiler::SendFrameMark(name, ::tracy::QueueType::FrameMarkMsgStart);
+    }
+
+    void frame_mark_end(char const* name) noexcept
+    {
+        ::tracy::Profiler::SendFrameMark(name, ::tracy::QueueType::FrameMarkMsgEnd);
     }
 
     // Create a new plot in Tracy

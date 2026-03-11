@@ -24,4 +24,5 @@ cmake-build*
 /.cache
 vscode-build
 compile_commands.json
+/build-tracy
 

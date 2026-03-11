@@ -9,6 +9,7 @@ set(example_programs
     barrier_docs
     composable_guard
     condition_variable_docs
+    copy_if_demo
     counting_semaphore_docs
     customize_async
     enumerate_threads

@@ -480,6 +480,78 @@ namespace hpx::parallel {
                     });
         }
 
+        ///////////////////////////////////////////////////////////////////////
+        // parallel_uninitialized_relocate_n_backward
+        //
+        // Like parallel_uninitialized_relocate_n but returns
+        // in_out_result{first, dest_first} instead of {first+count, dest_last},
+        // matching the semantics of uninitialized_relocate_backward.
+        HPX_CXX_CORE_EXPORT template <typename ExPolicy, typename BiIter,
+            typename FwdIter, typename Size>
+            requires(hpx::traits::is_input_iterator_v<BiIter> &&
+                hpx::traits::is_forward_iterator_v<FwdIter> &&
+                std::is_integral_v<Size>)
+        decltype(auto) parallel_uninitialized_relocate_n_backward(
+            ExPolicy&& policy, BiIter first, Size count, FwdIter dest_last)
+        {
+            constexpr bool has_scheduler_executor =
+                hpx::execution_policy_has_scheduler_executor_v<ExPolicy>;
+
+            auto dest_first = std::prev(dest_last, count);
+
+            if constexpr (!has_scheduler_executor)
+            {
+                if (count == 0)
+                {
+                    return util::detail::algorithm_result<ExPolicy,
+                        util::in_out_result<BiIter, FwdIter>>::
+                        get(util::in_out_result<BiIter, FwdIter>{
+                            first, dest_first});
+                }
+            }
+
+            using zip_iter = ::hpx::util::zip_iterator<BiIter, FwdIter>;
+            using partition_result_type = std::pair<FwdIter, FwdIter>;
+
+            return util::partitioner_with_cleanup<ExPolicy,
+                util::in_out_result<BiIter, FwdIter>, partition_result_type>::
+                call(
+                    HPX_FORWARD(ExPolicy, policy),
+                    zip_iter(first, dest_first), count,
+                    [](zip_iter t, std::size_t part_size) mutable
+                        -> partition_result_type {
+                        using hpx::get;
+
+                        auto iters = t.get_iterator_tuple();
+
+                        BiIter part_source = get<0>(iters);
+                        FwdIter part_dest = get<1>(iters);
+
+                        auto [part_source_advanced, part_dest_advanced] =
+                            hpx::experimental::util::
+                                uninitialized_relocate_n_primitive(
+                                    part_source, part_size, part_dest);
+
+                        return std::make_pair(part_dest, part_dest_advanced);
+                    },
+                    // finalize: returns {first, dest_first} to match
+                    // uninitialized_relocate_backward sequential semantics
+                    [first, dest_first](auto&&... data) mutable
+                        -> util::in_out_result<BiIter, FwdIter> {
+                        static_assert(sizeof...(data) < 2);
+
+                        util::detail::clear_container(data...);
+
+                        return util::in_out_result<BiIter, FwdIter>{
+                            first, dest_first};
+                    },
+                    // cleanup function, called for each partition which
+                    // didn't fail, but only if at least one failed
+                    [](partition_result_type&& r) -> void {
+                        std::destroy(r.first, r.second);
+                    });
+        }
+
         /////////////////////////////////////////////////////////////////////////////
         // uninitialized_relocate_n
 
@@ -647,10 +719,11 @@ namespace hpx::parallel {
             {
                 auto count = std::distance(first, last);
 
-                auto dest_first = std::prev(dest_last, count);
-
-                return parallel_uninitialized_relocate_n(
-                    HPX_FORWARD(ExPolicy, policy), first, count, dest_first);
+                // Use parallel_uninitialized_relocate_n_backward so that the
+                // result is in_out_result{first, dest_first}, matching the
+                // sequential overload and the algorithm's documented return value.
+                return parallel_uninitialized_relocate_n_backward(
+                    HPX_FORWARD(ExPolicy, policy), first, count, dest_last);
             }
         };
         /// \endcond
@@ -744,45 +817,51 @@ namespace hpx::experimental {
                 }
             }
 
-            // If running in non-sequenced execution policy, we must check
-            // that the ranges are not overlapping in the left
+            // For non-sequenced execution policies, use parallel execution
+            // unless a left-shift overlap is detected (only detectable for
+            // contiguous iterators). For non-contiguous iterators, the
+            // algorithm contract requires the user to ensure non-overlapping
+            // ranges (same as std::copy).
             if constexpr (!hpx::is_sequenced_execution_policy_v<ExPolicy>)
             {
-                // if we can check for overlapping ranges
+                bool has_overlap = false;
                 if constexpr (hpx::traits::is_contiguous_iterator_v<InIter> &&
                     hpx::traits::is_contiguous_iterator_v<FwdIter>)
                 {
                     auto dest_last = std::next(dest, count);
                     auto last = std::next(first, count);
-                    // if it is not overlapping in the left direction
-                    if (!((first < dest_last) && (dest_last < last)))
-                    {
-                        // use parallel version
-                        if constexpr (has_scheduler_executor)
-                        {
-                            namespace ex = hpx::execution::experimental;
-                            return ex::unique_any_sender<
-                                FwdIter>(parallel::util::get_second_element(
-                                hpx::parallel::detail::uninitialized_relocate_n<
-                                    parallel::util::in_out_result<InIter,
-                                        FwdIter>>()
-                                    .call(HPX_FORWARD(ExPolicy, policy), first,
-                                        count, dest)));
-                        }
-                        else
-                        {
-                            return parallel::util::get_second_element(
-                                hpx::parallel::detail::uninitialized_relocate_n<
-                                    parallel::util::in_out_result<InIter,
-                                        FwdIter>>()
-                                    .call(HPX_FORWARD(ExPolicy, policy), first,
-                                        count, dest));
-                        }
-                    }
-                    // if it is we continue to use the sequential version
+                    // Detect left-shift overlap: dest_last falls within
+                    // the source range [first, last)
+                    has_overlap =
+                        (first < dest_last) && (dest_last < last);
                 }
-                // else we assume that the ranges are overlapping, and continue
-                // to use the sequential version
+
+                if (!has_overlap)
+                {
+                    // use parallel version
+                    if constexpr (has_scheduler_executor)
+                    {
+                        namespace ex = hpx::execution::experimental;
+                        return ex::unique_any_sender<
+                            FwdIter>(parallel::util::get_second_element(
+                            hpx::parallel::detail::uninitialized_relocate_n<
+                                parallel::util::in_out_result<InIter,
+                                    FwdIter>>()
+                                .call(HPX_FORWARD(ExPolicy, policy), first,
+                                    count, dest)));
+                    }
+                    else
+                    {
+                        return parallel::util::get_second_element(
+                            hpx::parallel::detail::uninitialized_relocate_n<
+                                parallel::util::in_out_result<InIter,
+                                    FwdIter>>()
+                                .call(HPX_FORWARD(ExPolicy, policy), first,
+                                    count, dest));
+                    }
+                }
+                // else: left-shift overlap detected → fall through to
+                // sequential to preserve element ordering
             }
 
             if constexpr (has_scheduler_executor)
@@ -892,44 +971,50 @@ namespace hpx::experimental {
                 }
             }
 
-            // If running in non-sequenced execution policy, we must check
-            // that the ranges are not overlapping in the left
+            // For non-sequenced execution policies, use parallel execution
+            // unless a left-shift overlap is detected (only detectable for
+            // contiguous iterators). For non-contiguous iterators, the
+            // algorithm contract requires the user to ensure non-overlapping
+            // ranges (same as std::copy).
             if constexpr (!hpx::is_sequenced_execution_policy_v<ExPolicy>)
             {
-                // if we can check for overlapping ranges
+                bool has_overlap = false;
                 if constexpr (hpx::traits::is_contiguous_iterator_v<InIter1> &&
                     hpx::traits::is_contiguous_iterator_v<FwdIter>)
                 {
                     auto dest_last = std::next(dest, count);
-                    // if it is not overlapping in the left direction
-                    if (!((first < dest_last) && (dest_last < last)))
-                    {
-                        // use parallel version
-                        if constexpr (has_scheduler_executor)
-                        {
-                            namespace ex = hpx::execution::experimental;
-                            return ex::unique_any_sender<
-                                FwdIter>(parallel::util::get_second_element(
-                                hpx::parallel::detail::uninitialized_relocate_n<
-                                    parallel::util::in_out_result<InIter1,
-                                        FwdIter>>()
-                                    .call(HPX_FORWARD(ExPolicy, policy), first,
-                                        count, dest)));
-                        }
-                        else
-                        {
-                            return parallel::util::get_second_element(
-                                hpx::parallel::detail::uninitialized_relocate_n<
-                                    parallel::util::in_out_result<InIter1,
-                                        FwdIter>>()
-                                    .call(HPX_FORWARD(ExPolicy, policy), first,
-                                        count, dest));
-                        }
-                    }
-                    // if it is we continue to use the sequential version
+                    // Detect left-shift overlap: dest_last falls within
+                    // the source range [first, last)
+                    has_overlap =
+                        (first < dest_last) && (dest_last < last);
                 }
-                // else we assume that the ranges are overlapping, and continue
-                // to use the sequential version
+
+                if (!has_overlap)
+                {
+                    // use parallel version
+                    if constexpr (has_scheduler_executor)
+                    {
+                        namespace ex = hpx::execution::experimental;
+                        return ex::unique_any_sender<
+                            FwdIter>(parallel::util::get_second_element(
+                            hpx::parallel::detail::uninitialized_relocate_n<
+                                parallel::util::in_out_result<InIter1,
+                                    FwdIter>>()
+                                .call(HPX_FORWARD(ExPolicy, policy), first,
+                                    count, dest)));
+                    }
+                    else
+                    {
+                        return parallel::util::get_second_element(
+                            hpx::parallel::detail::uninitialized_relocate_n<
+                                parallel::util::in_out_result<InIter1,
+                                    FwdIter>>()
+                                .call(HPX_FORWARD(ExPolicy, policy), first,
+                                    count, dest));
+                    }
+                }
+                // else: left-shift overlap detected → fall through to
+                // sequential to preserve element ordering
             }
 
             // sequential execution policy
@@ -1035,46 +1120,52 @@ namespace hpx::experimental {
                 }
             }
 
-            // If running in non-sequence execution policy, we must check
-            // that the ranges are not overlapping in the right
+            // For non-sequenced execution policies, use parallel execution
+            // unless a right-shift overlap is detected (only detectable for
+            // contiguous iterators). For non-contiguous iterators, the
+            // algorithm contract requires the user to ensure non-overlapping
+            // ranges (same as std::copy_backward).
             if constexpr (!hpx::is_sequenced_execution_policy_v<ExPolicy>)
             {
-                // if we can check for overlapping ranges
+                bool has_overlap = false;
                 if constexpr (hpx::traits::is_contiguous_iterator_v<BiIter1> &&
                     hpx::traits::is_contiguous_iterator_v<BiIter2>)
                 {
                     auto dest_first = std::prev(dest_last, count);
-                    // if it is not overlapping in the right direction
-                    if (!((first < dest_first) && (dest_first < last)))
+                    // Detect right-shift overlap: dest_first falls within
+                    // the source range (first, last)
+                    has_overlap =
+                        (first < dest_first) && (dest_first < last);
+                }
+
+                if (!has_overlap)
+                {
+                    // use parallel version
+                    if constexpr (has_scheduler_executor)
                     {
-                        // use parallel version
-                        if constexpr (has_scheduler_executor)
-                        {
-                            namespace ex = hpx::execution::experimental;
-                            return ex::unique_any_sender<BiIter2>(
-                                parallel::util::get_second_element(
-                                    hpx::parallel::detail::
-                                        uninitialized_relocate_backward<
-                                            parallel::util::in_out_result<
-                                                BiIter1, BiIter2>>()
-                                            .call(HPX_FORWARD(ExPolicy, policy),
-                                                first, last, dest_last)));
-                        }
-                        else
-                        {
-                            return parallel::util::get_second_element(
+                        namespace ex = hpx::execution::experimental;
+                        return ex::unique_any_sender<BiIter2>(
+                            parallel::util::get_second_element(
                                 hpx::parallel::detail::
                                     uninitialized_relocate_backward<
                                         parallel::util::in_out_result<BiIter1,
                                             BiIter2>>()
                                         .call(HPX_FORWARD(ExPolicy, policy),
-                                            first, last, dest_last));
-                        }
+                                            first, last, dest_last)));
                     }
-                    // if it is we continue to use the sequential version
+                    else
+                    {
+                        return parallel::util::get_second_element(
+                            hpx::parallel::detail::
+                                uninitialized_relocate_backward<
+                                    parallel::util::in_out_result<BiIter1,
+                                        BiIter2>>()
+                                    .call(HPX_FORWARD(ExPolicy, policy),
+                                        first, last, dest_last));
+                    }
                 }
-                // else we assume that the ranges are overlapping, and continue
-                // to use the sequential version
+                // else: right-shift overlap detected → fall through to
+                // sequential to preserve backward element ordering
             }
 
             // sequential execution policy

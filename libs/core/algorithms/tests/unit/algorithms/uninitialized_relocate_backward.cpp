@@ -1,4 +1,5 @@
 //  Copyright (c) 2023 Isidoros Tsaousis-Seiras
+//  Copyright (c) 2026 Arivoli Ramamoorthy
 //
 //  SPDX-License-Identifier: BSL-1.0
 //  Distributed under the Boost Software License, Version 1.0. (See accompanying
@@ -510,6 +511,204 @@ void test_overlapping()
     return;
 }
 
+template <typename T>
+struct non_contiguous_iterator
+{
+    using value_type = T;
+    using difference_type = std::ptrdiff_t;
+    using pointer = T*;
+    using reference = T&;
+    using iterator_category = std::random_access_iterator_tag;
+
+    T* ptr;
+
+    explicit non_contiguous_iterator(T* p) noexcept
+      : ptr(p)
+    {
+    }
+
+    T& operator*() const noexcept { return *ptr; }
+    T* operator->() const noexcept { return ptr; }
+
+    non_contiguous_iterator& operator++() noexcept
+    {
+        ++ptr;
+        return *this;
+    }
+    non_contiguous_iterator operator++(int) noexcept
+    {
+        auto tmp = *this;
+        ++ptr;
+        return tmp;
+    }
+    non_contiguous_iterator& operator--() noexcept
+    {
+        --ptr;
+        return *this;
+    }
+    non_contiguous_iterator operator--(int) noexcept
+    {
+        auto tmp = *this;
+        --ptr;
+        return tmp;
+    }
+    non_contiguous_iterator& operator+=(difference_type n) noexcept
+    {
+        ptr += n;
+        return *this;
+    }
+    non_contiguous_iterator& operator-=(difference_type n) noexcept
+    {
+        ptr -= n;
+        return *this;
+    }
+    non_contiguous_iterator operator+(difference_type n) const noexcept
+    {
+        return non_contiguous_iterator{ptr + n};
+    }
+    non_contiguous_iterator operator-(difference_type n) const noexcept
+    {
+        return non_contiguous_iterator{ptr - n};
+    }
+    difference_type operator-(
+        const non_contiguous_iterator& o) const noexcept
+    {
+        return ptr - o.ptr;
+    }
+    T& operator[](difference_type n) const noexcept { return ptr[n]; }
+    bool operator==(const non_contiguous_iterator& o) const noexcept
+    {
+        return ptr == o.ptr;
+    }
+    bool operator!=(const non_contiguous_iterator& o) const noexcept
+    {
+        return ptr != o.ptr;
+    }
+    bool operator<(const non_contiguous_iterator& o) const noexcept
+    {
+        return ptr < o.ptr;
+    }
+    bool operator>(const non_contiguous_iterator& o) const noexcept
+    {
+        return ptr > o.ptr;
+    }
+    bool operator<=(const non_contiguous_iterator& o) const noexcept
+    {
+        return ptr <= o.ptr;
+    }
+    bool operator>=(const non_contiguous_iterator& o) const noexcept
+    {
+        return ptr >= o.ptr;
+    }
+    friend non_contiguous_iterator operator+(
+        difference_type n, const non_contiguous_iterator& it) noexcept
+    {
+        return non_contiguous_iterator{it.ptr + n};
+    }
+};
+
+static_assert(
+    !hpx::traits::is_contiguous_iterator_v<
+        non_contiguous_iterator<trivially_relocatable_struct>>,
+    "non_contiguous_iterator must not be contiguous");
+
+// Test parallel execution with non-contiguous iterators (non-overlapping).
+// Also verifies that the return value is dest_first (not dest_last).
+template <typename Ex>
+void test_non_contiguous()
+{
+    {    // Non-contiguous non-trivially relocatable
+        auto [ptr1, ptr2] = setup<non_trivially_relocatable_struct>();
+
+        using nc_iter = non_contiguous_iterator<non_trivially_relocatable_struct>;
+
+        auto result = uninitialized_relocate_backward(
+            Ex{}, nc_iter(ptr1), nc_iter(ptr1 + M), nc_iter(ptr2 + M));
+
+        // Return value must be dest_first (ptr2), not dest_last (ptr2+M)
+        HPX_TEST(result.ptr == ptr2);
+
+        HPX_TEST(non_trivially_relocatable_struct::moved == M);
+        HPX_TEST(non_trivially_relocatable_struct::destroyed == M);
+
+        for (int i = 0; i < M; i++)
+            HPX_TEST(ptr2[i].data == i);
+        for (int i = M; i < N; i++)
+            HPX_TEST(ptr1[i].data == i);
+
+        std::destroy(ptr1 + M, ptr1 + N);
+        std::destroy(ptr2, ptr2 + M);
+        HPX_TEST(non_trivially_relocatable_struct::made.empty());
+
+        std::free(ptr1);
+        std::free(ptr2);
+    }
+    {    // Non-contiguous trivially relocatable
+        auto [ptr1, ptr2] = setup<trivially_relocatable_struct>();
+
+        using nc_iter = non_contiguous_iterator<trivially_relocatable_struct>;
+
+        auto result = uninitialized_relocate_backward(
+            Ex{}, nc_iter(ptr1), nc_iter(ptr1 + M), nc_iter(ptr2 + M));
+
+        // Return value must be dest_first (ptr2)
+        HPX_TEST(result.ptr == ptr2);
+
+        for (int i = 0; i < M; i++)
+        {
+            trivially_relocatable_struct::made.erase(ptr1 + i);
+            trivially_relocatable_struct::made.insert(ptr2 + i);
+        }
+
+        HPX_TEST(trivially_relocatable_struct::moved == 0);
+        HPX_TEST(trivially_relocatable_struct::destroyed == 0);
+
+        for (int i = 0; i < M; i++)
+            HPX_TEST(ptr2[i].data == i);
+        for (int i = M; i < N; i++)
+            HPX_TEST(ptr1[i].data == i);
+
+        std::destroy(ptr1 + M, ptr1 + N);
+        std::destroy(ptr2, ptr2 + M);
+        HPX_TEST(trivially_relocatable_struct::made.empty());
+
+        std::free(ptr1);
+        std::free(ptr2);
+    }
+    clear();
+}
+
+// Verify return value consistency: parallel and sequential must return
+// the same value (dest_first, not dest_last).
+void test_return_value()
+{
+    auto [ptr1, ptr2] = setup<non_trivially_relocatable_struct>();
+
+    auto seq_result = uninitialized_relocate_backward(
+        hpx::execution::seq, ptr1, ptr1 + M, ptr2 + M);
+    HPX_TEST(seq_result == ptr2);
+
+    // reset and redo with parallel policy
+    std::destroy(ptr2, ptr2 + M);
+    for (int i = 0; i < M; i++)
+        hpx::construct_at(ptr1 + i, i);
+    non_trivially_relocatable_struct::moved = 0;
+    non_trivially_relocatable_struct::destroyed = 0;
+
+    auto par_result = uninitialized_relocate_backward(
+        hpx::execution::par, ptr1, ptr1 + M, ptr2 + M);
+    HPX_TEST(par_result == ptr2);
+
+    std::destroy(ptr1 + M, ptr1 + N);
+    std::destroy(ptr2, ptr2 + M);
+    non_trivially_relocatable_struct::made.clear();
+    non_trivially_relocatable_struct::moved = 0;
+    non_trivially_relocatable_struct::destroyed = 0;
+
+    std::free(ptr1);
+    std::free(ptr2);
+}
+
 int hpx_main()
 {
     test<hpx::execution::sequenced_policy>();
@@ -517,6 +716,12 @@ int hpx_main()
 
     test_overlapping<hpx::execution::sequenced_policy>();
     test_overlapping<hpx::execution::parallel_policy>();
+
+    // Test parallel path with non-contiguous iterators
+    test_non_contiguous<hpx::execution::parallel_policy>();
+
+    // Verify return value is dest_first for both seq and par
+    test_return_value();
 
     return hpx::local::finalize();
 }
